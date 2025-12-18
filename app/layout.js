@@ -4,6 +4,11 @@ export const metadata = {
   title: "#hello | Secure P2P Messenger",
   description: "End-to-end encrypted P2P messenger",
   manifest: '/manifest.json',
+  icons: {
+    icon: '/icon.png',
+    shortcut: '/favicon.ico',
+    apple: '/icon.png',
+  },
   appleWebApp: {
     capable: true,
     statusBarStyle: 'black-translucent',

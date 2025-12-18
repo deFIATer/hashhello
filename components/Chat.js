@@ -150,7 +150,19 @@ export default function Chat({ identity, onLogout }) {
 
         newPeer.on('error', (err) => {
           console.error('Peer error:', err);
-          if (err.type !== 'peer-unavailable') {
+          if (err.type === 'peer-unavailable') {
+            const match = err.message.match(/peer\s+(\d+)/);
+            if (match && match[1]) {
+               const targetId = match[1];
+               setChats(prev => {
+                 if (!prev[targetId]) return prev;
+                 return {
+                   ...prev,
+                   [targetId]: { ...prev[targetId], status: 'offline', lastMessage: 'User is offline' }
+                 };
+               });
+            }
+          } else {
             setStatus('error');
             playSound('error');
           }
@@ -266,22 +278,34 @@ export default function Chat({ identity, onLogout }) {
     setDialNumber('');
   };
 
+  const reconnectToChat = (peerId) => {
+    playSound('click');
+    if (!peer) return;
+    
+    console.log("Reconnecting to", peerId);
+    const conn = peer.connect(peerId);
+    setupConnection(conn, true);
+  };
+
   const setupConnection = (conn, isInitiator) => {
     const peerId = conn.peer;
 
     // Initialize chat entry
-    setChats(prev => ({
-      ...prev,
-      [peerId]: {
-        id: peerId,
-        conn: conn,
-        messages: [],
-        status: 'connecting',
-        unread: 0,
-        lastMessage: 'Connecting...',
-        timestamp: Date.now()
-      }
-    }));
+    setChats(prev => {
+      const existing = prev[peerId];
+      return {
+        ...prev,
+        [peerId]: {
+          id: peerId,
+          conn: conn,
+          messages: existing ? existing.messages : [],
+          status: 'connecting',
+          unread: existing ? existing.unread : 0,
+          lastMessage: 'Connecting...',
+          timestamp: Date.now()
+        }
+      };
+    });
 
     if (isInitiator) {
       setActiveChatId(peerId);
@@ -652,8 +676,17 @@ export default function Chat({ identity, onLogout }) {
                     </h2>
                   )}
                 </div>
-                <p className="text-[10px] text-gray-500 font-mono uppercase tracking-widest">
+                <p className="text-[10px] text-gray-500 font-mono uppercase tracking-widest flex items-center gap-2">
                   {activeChat.status === 'secure' ? 'ENCRYPTED CHANNEL' : activeChat.status}
+                  {(activeChat.status === 'disconnected' || activeChat.status === 'offline') && (
+                    <button 
+                      onClick={() => reconnectToChat(activeChat.id)}
+                      className="text-primary hover:text-white transition-colors"
+                      title="Reconnect"
+                    >
+                      <RefreshCw size={12} />
+                    </button>
+                  )}
                 </p>
               </div>
             </header>

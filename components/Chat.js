@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Send, Phone, Shield, AlertTriangle, Loader2, User, LogOut, Lock, Signal, Wifi, Menu, X, MessageSquare, ChevronLeft, Paperclip, Image as ImageIcon, RefreshCw, Download, Edit2, Check, Mic, Square, Trash2, PhoneOff, MicOff, PhoneIncoming } from 'lucide-react';
 import { deriveSharedSecret, encryptMessage, decryptMessage, verifyIdentity, importPublicKey, encryptStorageData, decryptStorageData } from '../lib/crypto';
 import { playSound } from '../lib/audio';
+import { saveToStorage, loadFromStorage } from '../lib/storage';
 
 export default function Chat({ identity, onLogout }) {
   const [peer, setPeer] = useState(null);
@@ -171,11 +172,13 @@ export default function Chat({ identity, onLogout }) {
   useEffect(() => {
     const loadData = async () => {
       // Load Chats
-      const encryptedChats = localStorage.getItem('hellofrom_encrypted_chats');
+      let encryptedChats = await loadFromStorage('hellofrom_encrypted_chats');
       if (encryptedChats && identity.masterKey) {
         try {
-          const parsedEnc = JSON.parse(encryptedChats);
-          const decrypted = await decryptStorageData(parsedEnc, identity.masterKey);
+          if (typeof encryptedChats === 'string') {
+            encryptedChats = JSON.parse(encryptedChats);
+          }
+          const decrypted = await decryptStorageData(encryptedChats, identity.masterKey);
           
           const hydrated = {};
           Object.keys(decrypted).forEach(key => {
@@ -198,11 +201,13 @@ export default function Chat({ identity, onLogout }) {
       }
 
       // Load Contacts
-      const encryptedContacts = localStorage.getItem('hellofrom_encrypted_contacts');
+      let encryptedContacts = await loadFromStorage('hellofrom_encrypted_contacts');
       if (encryptedContacts && identity.masterKey) {
         try {
-          const parsedEnc = JSON.parse(encryptedContacts);
-          const decrypted = await decryptStorageData(parsedEnc, identity.masterKey);
+          if (typeof encryptedContacts === 'string') {
+            encryptedContacts = JSON.parse(encryptedContacts);
+          }
+          const decrypted = await decryptStorageData(encryptedContacts, identity.masterKey);
           setContacts(decrypted);
         } catch (e) {
           console.error("Failed to decrypt contacts", e);
@@ -232,7 +237,7 @@ export default function Chat({ identity, onLogout }) {
     const saveData = async () => {
       try {
         const encrypted = await encryptStorageData(toSave, identity.masterKey);
-        localStorage.setItem('hellofrom_encrypted_chats', JSON.stringify(encrypted));
+        await saveToStorage('hellofrom_encrypted_chats', encrypted);
       } catch (e) {
         console.error("Failed to save encrypted chats", e);
       }
@@ -246,7 +251,7 @@ export default function Chat({ identity, onLogout }) {
     const saveContacts = async () => {
       try {
         const encrypted = await encryptStorageData(contacts, identity.masterKey);
-        localStorage.setItem('hellofrom_encrypted_contacts', JSON.stringify(encrypted));
+        await saveToStorage('hellofrom_encrypted_contacts', encrypted);
       } catch (e) {
         console.error("Failed to save encrypted contacts", e);
       }
@@ -446,11 +451,13 @@ export default function Chat({ identity, onLogout }) {
 
     try {
       // Get current salt to include in backup (so we can derive the same key)
-      const storedIdentity = localStorage.getItem('hellofrom_encrypted_identity');
+      let storedIdentity = await loadFromStorage('hellofrom_encrypted_identity');
       let salt = null;
       if (storedIdentity) {
-          const parsed = JSON.parse(storedIdentity);
-          salt = parsed.salt;
+          if (typeof storedIdentity === 'string') {
+              storedIdentity = JSON.parse(storedIdentity);
+          }
+          salt = storedIdentity.salt;
       }
 
       if (!salt) {
@@ -687,18 +694,69 @@ export default function Chat({ identity, onLogout }) {
     const file = e.target.files[0];
     if (!file) return;
     
-    // 5MB limit
-    if (file.size > 5 * 1024 * 1024) {
-      alert("File too large. Max 5MB.");
-      return;
+    // Basic validation
+    if (!file.type.startsWith('image/')) {
+        alert("Please select an image file.");
+        return;
     }
 
-    const reader = new FileReader();
-    reader.onload = async () => {
-      const base64 = reader.result;
-      await sendMessage({ type: 'image', content: base64, fileName: file.name });
+    const compressImage = (file) => {
+        return new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onload = (event) => {
+                const img = new Image();
+                img.src = event.target.result;
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    let width = img.width;
+                    let height = img.height;
+                    
+                    // Max dimension constraint to help with size
+                    const MAX_DIMENSION = 1920;
+                    if (width > height) {
+                        if (width > MAX_DIMENSION) {
+                            height *= MAX_DIMENSION / width;
+                            width = MAX_DIMENSION;
+                        }
+                    } else {
+                        if (height > MAX_DIMENSION) {
+                            width *= MAX_DIMENSION / height;
+                            height = MAX_DIMENSION;
+                        }
+                    }
+
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+
+                    // Compression loop to target < 1MB
+                    let quality = 0.9;
+                    let dataUrl = canvas.toDataURL('image/jpeg', quality);
+                    
+                    // Base64 length is approx 4/3 of binary size. 1MB binary ~= 1.33MB base64
+                    // We'll target ~1MB base64 length to be safe
+                    const MAX_SIZE = 1024 * 1024; 
+                    
+                    while (dataUrl.length > MAX_SIZE && quality > 0.1) {
+                        quality -= 0.1;
+                        dataUrl = canvas.toDataURL('image/jpeg', quality);
+                    }
+
+                    resolve(dataUrl);
+                };
+            };
+        });
     };
-    reader.readAsDataURL(file);
+
+    try {
+        const compressedBase64 = await compressImage(file);
+        await sendMessage({ type: 'image', content: compressedBase64, fileName: file.name });
+    } catch (err) {
+        console.error("Image compression failed", err);
+        alert("Failed to process image.");
+    }
     
     // Reset input
     e.target.value = '';
@@ -990,7 +1048,7 @@ export default function Chat({ identity, onLogout }) {
                 </div>
                 <div className="flex justify-between items-center">
                   <p className={`text-xs truncate max-w-[140px] ${chat.status === 'secure' ? 'text-gray-500' : 'text-gray-400'}`}>
-                    {chat.status === 'secure' ? chat.lastMessage : chat.status.toUpperCase()}
+                    {chat.status === 'secure' ? (chat.lastMessage?.startsWith('data:audio') ? 'Voice Message' : chat.lastMessage) : chat.status.toUpperCase()}
                   </p>
                   {chat.unread > 0 && (
                     <span className="bg-primary text-black text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">

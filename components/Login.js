@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { generateIdentity, importIdentity, deriveMasterKey, encryptStorageData, decryptStorageData } from '../lib/crypto';
+import { saveToStorage, loadFromStorage, removeFromStorage } from '../lib/storage';
 import { Copy, Key, LogIn, ShieldCheck, Terminal, Save, Lock, Unlock, Upload, Download } from 'lucide-react';
 
 export default function Login({ onLogin }) {
@@ -21,14 +22,17 @@ export default function Login({ onLogin }) {
   const [importPassword, setImportPassword] = useState('');
 
   useEffect(() => {
-    const encrypted = localStorage.getItem('hellofrom_encrypted_identity');
-    const num = localStorage.getItem('hellofrom_saved_number');
-    if (num) setSavedNumber(num);
-    
-    if (encrypted) {
-      setHasEncryptedSession(true);
-      setMode('unlock');
-    }
+    const checkSession = async () => {
+      const encrypted = await loadFromStorage('hellofrom_encrypted_identity');
+      const num = await loadFromStorage('hellofrom_saved_number');
+      if (num) setSavedNumber(num);
+      
+      if (encrypted) {
+        setHasEncryptedSession(true);
+        setMode('unlock');
+      }
+    };
+    checkSession();
   }, []);
 
   const handleGenerate = async () => {
@@ -66,18 +70,18 @@ export default function Login({ onLogin }) {
         iv: encryptedIdentity.iv,
         data: encryptedIdentity.data
       };
-      localStorage.setItem('hellofrom_encrypted_identity', JSON.stringify(storageObj));
-      localStorage.setItem('hellofrom_saved_number', generatedData.phoneNumber);
+      await saveToStorage('hellofrom_encrypted_identity', JSON.stringify(storageObj));
+      await saveToStorage('hellofrom_saved_number', generatedData.phoneNumber);
 
       // 4b. Restore Backup Data if available
       if (window.pendingBackupChats) {
           const encryptedChats = await encryptStorageData(window.pendingBackupChats, masterKey);
-          localStorage.setItem('hellofrom_encrypted_chats', JSON.stringify(encryptedChats));
+          await saveToStorage('hellofrom_encrypted_chats', JSON.stringify(encryptedChats));
           delete window.pendingBackupChats;
       }
       if (window.pendingBackupContacts) {
           const encryptedContacts = await encryptStorageData(window.pendingBackupContacts, masterKey);
-          localStorage.setItem('hellofrom_encrypted_contacts', JSON.stringify(encryptedContacts));
+          await saveToStorage('hellofrom_encrypted_contacts', JSON.stringify(encryptedContacts));
           delete window.pendingBackupContacts;
       }
 
@@ -99,10 +103,16 @@ export default function Login({ onLogin }) {
     setError('');
 
     try {
-      const encryptedStr = localStorage.getItem('hellofrom_encrypted_identity');
+      let encryptedStr = await loadFromStorage('hellofrom_encrypted_identity');
       if (!encryptedStr) throw new Error("No session found");
 
-      const storageObj = JSON.parse(encryptedStr);
+      let storageObj;
+      if (typeof encryptedStr === 'string') {
+          storageObj = JSON.parse(encryptedStr);
+      } else {
+          storageObj = encryptedStr;
+      }
+
       const salt = new Uint8Array(storageObj.salt);
 
       // 1. Derive Master Key
@@ -131,12 +141,13 @@ export default function Login({ onLogin }) {
     setLoading(false);
   };
 
-  const handleReset = () => {
+  const handleReset = async () => {
     if (confirm("This will delete your existing account and all encrypted data. Are you sure?")) {
-      localStorage.removeItem('hellofrom_encrypted_identity');
-      localStorage.removeItem('hellofrom_encrypted_chats');
-      localStorage.removeItem('hellofrom_encrypted_contacts');
-      localStorage.removeItem('hellofrom_saved_number');
+      await removeFromStorage('hellofrom_encrypted_identity');
+      await removeFromStorage('hellofrom_encrypted_chats');
+      await removeFromStorage('hellofrom_encrypted_contacts');
+      await removeFromStorage('hellofrom_saved_number');
+      
       localStorage.removeItem('hellofrom_chats'); // Cleanup old
       localStorage.removeItem('hellofrom_contacts'); // Cleanup old
       localStorage.removeItem('hashhello_identity'); // Cleanup old
@@ -235,17 +246,17 @@ export default function Login({ onLogin }) {
         iv: encryptedIdentity.iv,
         data: encryptedIdentity.data
       };
-      localStorage.setItem('hellofrom_encrypted_identity', JSON.stringify(storageObj));
-      localStorage.setItem('hellofrom_saved_number', decrypted.identity.phoneNumber);
+      await saveToStorage('hellofrom_encrypted_identity', JSON.stringify(storageObj));
+      await saveToStorage('hellofrom_saved_number', decrypted.identity.phoneNumber);
 
       // 3. Save Chats & Contacts
       if (decrypted.chats) {
         const encChats = await encryptStorageData(decrypted.chats, masterKey);
-        localStorage.setItem('hellofrom_encrypted_chats', JSON.stringify(encChats));
+        await saveToStorage('hellofrom_encrypted_chats', JSON.stringify(encChats));
       }
       if (decrypted.contacts) {
         const encContacts = await encryptStorageData(decrypted.contacts, masterKey);
-        localStorage.setItem('hellofrom_encrypted_contacts', JSON.stringify(encContacts));
+        await saveToStorage('hellofrom_encrypted_contacts', JSON.stringify(encContacts));
       }
 
       // 4. Login
@@ -280,17 +291,19 @@ export default function Login({ onLogin }) {
           <input 
             type="text" 
             name="username" 
+            id="username"
             autoComplete="username" 
             value={savedNumber} 
             readOnly 
-            className="hidden" 
+            style={{ position: 'absolute', opacity: 0, zIndex: -1, height: 0 }}
           />
 
           <div>
-            <label className="text-xs text-gray-500 font-mono uppercase mb-1 block">Master Password</label>
+            <label htmlFor="password" className="text-xs text-gray-500 font-mono uppercase mb-1 block">Master Password</label>
             <input
               type="password"
               name="password"
+              id="password"
               autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -462,15 +475,17 @@ export default function Login({ onLogin }) {
               <input 
                 type="text" 
                 name="username" 
+                id="new-username"
                 autoComplete="username" 
                 value={generatedData.formattedNumber} 
                 readOnly 
-                className="hidden" 
+                style={{ position: 'absolute', opacity: 0, zIndex: -1, height: 0 }}
               />
               
               <input
                 type="password"
                 name="new-password"
+                id="new-password"
                 autoComplete="new-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -480,6 +495,7 @@ export default function Login({ onLogin }) {
               <input
                 type="password"
                 name="confirm-password"
+                id="confirm-password"
                 autoComplete="new-password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}

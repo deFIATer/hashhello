@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Send, Phone, Shield, AlertTriangle, Loader2, User, LogOut, Lock, Signal, Wifi, Menu, X, MessageSquare, ChevronLeft, Paperclip, Image as ImageIcon, RefreshCw, Download, Edit2, Check } from 'lucide-react';
-import { deriveSharedSecret, encryptMessage, decryptMessage, verifyIdentity, importPublicKey } from '../lib/crypto';
+import { deriveSharedSecret, encryptMessage, decryptMessage, verifyIdentity, importPublicKey, encryptStorageData, decryptStorageData } from '../lib/crypto';
 import { playSound } from '../lib/audio';
 
 export default function Chat({ identity, onLogout }) {
@@ -30,37 +30,52 @@ export default function Chat({ identity, onLogout }) {
 
   // Load chats from localStorage on mount
   useEffect(() => {
-    const savedChats = localStorage.getItem('hellofrom_chats');
-    if (savedChats) {
-      try {
-        const parsed = JSON.parse(savedChats);
-        const hydrated = {};
-        Object.keys(parsed).forEach(key => {
-          hydrated[key] = {
-            ...parsed[key],
-            conn: null,
-            status: 'disconnected'
-          };
-        });
-        setChats(hydrated);
-      } catch (e) {
-        console.error("Failed to load chats from storage", e);
+    const loadData = async () => {
+      // Load Chats
+      const encryptedChats = localStorage.getItem('hellofrom_encrypted_chats');
+      if (encryptedChats && identity.masterKey) {
+        try {
+          const parsedEnc = JSON.parse(encryptedChats);
+          const decrypted = await decryptStorageData(parsedEnc, identity.masterKey);
+          
+          const hydrated = {};
+          Object.keys(decrypted).forEach(key => {
+            hydrated[key] = {
+              ...decrypted[key],
+              conn: null,
+              status: 'disconnected'
+            };
+          });
+          setChats(hydrated);
+        } catch (e) {
+          console.error("Failed to decrypt chats", e);
+        }
+      } else {
+        // Fallback to old unencrypted storage (migration or dev)
+        const savedChats = localStorage.getItem('hellofrom_chats');
+        if (savedChats) {
+           // ... (Optional: migrate here if needed, but for now just ignore or load)
+        }
       }
-    }
 
-    const savedContacts = localStorage.getItem('hellofrom_contacts');
-    if (savedContacts) {
-      try {
-        setContacts(JSON.parse(savedContacts));
-      } catch (e) {
-        console.error("Failed to load contacts", e);
+      // Load Contacts
+      const encryptedContacts = localStorage.getItem('hellofrom_encrypted_contacts');
+      if (encryptedContacts && identity.masterKey) {
+        try {
+          const parsedEnc = JSON.parse(encryptedContacts);
+          const decrypted = await decryptStorageData(parsedEnc, identity.masterKey);
+          setContacts(decrypted);
+        } catch (e) {
+          console.error("Failed to decrypt contacts", e);
+        }
       }
-    }
-  }, []);
+    };
+    loadData();
+  }, [identity.masterKey]);
 
   // Save chats to localStorage whenever they change
   useEffect(() => {
-    if (Object.keys(chats).length === 0) return;
+    if (Object.keys(chats).length === 0 || !identity.masterKey) return;
 
     const toSave = {};
     Object.keys(chats).forEach(key => {
@@ -75,17 +90,30 @@ export default function Chat({ identity, onLogout }) {
       };
     });
 
-    try {
-      localStorage.setItem('hellofrom_chats', JSON.stringify(toSave));
-    } catch (e) {
-      console.error("Failed to save chats to storage (quota exceeded?)", e);
-    }
-  }, [chats]);
+    const saveData = async () => {
+      try {
+        const encrypted = await encryptStorageData(toSave, identity.masterKey);
+        localStorage.setItem('hellofrom_encrypted_chats', JSON.stringify(encrypted));
+      } catch (e) {
+        console.error("Failed to save encrypted chats", e);
+      }
+    };
+    saveData();
+  }, [chats, identity.masterKey]);
 
   // Save contacts
   useEffect(() => {
-    localStorage.setItem('hellofrom_contacts', JSON.stringify(contacts));
-  }, [contacts]);
+    if (!identity.masterKey) return;
+    const saveContacts = async () => {
+      try {
+        const encrypted = await encryptStorageData(contacts, identity.masterKey);
+        localStorage.setItem('hellofrom_encrypted_contacts', JSON.stringify(encrypted));
+      } catch (e) {
+        console.error("Failed to save encrypted contacts", e);
+      }
+    };
+    saveContacts();
+  }, [contacts, identity.masterKey]);
 
   // Request notification permission
   useEffect(() => {
@@ -190,6 +218,23 @@ export default function Chat({ identity, onLogout }) {
       if (newPeer) newPeer.destroy();
     };
   }, [identity.phoneNumber]);
+
+  // Auto-reconnect to saved chats when coming online
+  useEffect(() => {
+    if (status === 'online' && peer && !peer.destroyed) {
+      const savedChats = Object.values(chatsRef.current);
+      if (savedChats.length > 0) {
+        console.log(`Attempting to auto-reconnect to ${savedChats.length} chats...`);
+        savedChats.forEach(chat => {
+          if (chat.status === 'disconnected' || chat.status === 'offline') {
+            // Don't play sound for auto-reconnect to avoid spam
+            const conn = peer.connect(chat.id);
+            setupConnection(conn, true);
+          }
+        });
+      }
+    }
+  }, [status, peer]);
 
   // Auto-scroll
   useEffect(() => {

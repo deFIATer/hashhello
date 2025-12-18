@@ -40,11 +40,14 @@ export default function Chat({ identity, onLogout }) {
 
   // Initialize PeerJS
   useEffect(() => {
+    let reconnectInterval = null;
+    let newPeer = null;
+
     const initPeer = async () => {
       try {
         const Peer = (await import('peerjs')).default;
         
-        const newPeer = new Peer(identity.phoneNumber, {
+        newPeer = new Peer(identity.phoneNumber, {
           debug: 2,
           config: {
             iceServers: [
@@ -57,6 +60,23 @@ export default function Chat({ identity, onLogout }) {
         newPeer.on('open', (id) => {
           console.log('My peer ID is: ' + id);
           setStatus('online');
+          if (reconnectInterval) {
+            clearInterval(reconnectInterval);
+            reconnectInterval = null;
+          }
+        });
+
+        newPeer.on('disconnected', () => {
+          console.log('Peer disconnected');
+          setStatus('disconnected');
+          if (!reconnectInterval) {
+            reconnectInterval = setInterval(() => {
+              if (newPeer && !newPeer.destroyed) {
+                console.log('Attempting reconnection...');
+                newPeer.reconnect();
+              }
+            }, 30000);
+          }
         });
 
         newPeer.on('connection', (conn) => {
@@ -68,8 +88,10 @@ export default function Chat({ identity, onLogout }) {
 
         newPeer.on('error', (err) => {
           console.error('Peer error:', err);
-          setStatus('error');
-          playSound('error');
+          if (err.type !== 'peer-unavailable') {
+            setStatus('error');
+            playSound('error');
+          }
         });
 
         setPeer(newPeer);
@@ -80,6 +102,19 @@ export default function Chat({ identity, onLogout }) {
     };
 
     initPeer();
+
+    const handleOnline = () => {
+      if (newPeer && newPeer.disconnected && !newPeer.destroyed) {
+        newPeer.reconnect();
+      }
+    };
+    window.addEventListener('online', handleOnline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      if (reconnectInterval) clearInterval(reconnectInterval);
+      if (newPeer) newPeer.destroy();
+    };
   }, [identity.phoneNumber]);
 
   // Auto-scroll
@@ -343,6 +378,17 @@ export default function Chat({ identity, onLogout }) {
     return `#${p.slice(0, 3)} ${p.slice(3, 6)} ${p.slice(6)}`;
   };
 
+  const handleNumberChange = (e) => {
+    const raw = e.target.value.replace(/\D/g, '').slice(0, 9);
+    let formatted = raw;
+    if (raw.length > 6) {
+      formatted = `${raw.slice(0, 3)} ${raw.slice(3, 6)} ${raw.slice(6)}`;
+    } else if (raw.length > 3) {
+      formatted = `${raw.slice(0, 3)} ${raw.slice(3)}`;
+    }
+    setDialNumber(formatted);
+  };
+
   const activeChat = activeChatId ? chats[activeChatId] : null;
 
   return (
@@ -379,7 +425,7 @@ export default function Chat({ identity, onLogout }) {
               pattern="[0-9]*"
               placeholder="600 500 600"
               value={dialNumber}
-              onChange={(e) => setDialNumber(e.target.value)}
+              onChange={handleNumberChange}
               className="w-full bg-white/5 border border-white/10 rounded px-3 py-2 font-mono text-sm text-white focus:border-primary/50 focus:outline-none"
             />
             <button

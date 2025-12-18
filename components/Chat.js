@@ -617,7 +617,9 @@ export default function Chat({ identity, onLogout }) {
                   {chat.timestamp && <span className="text-[10px] text-gray-600">{new Date(chat.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>}
                 </div>
                 <div className="flex justify-between items-center">
-                  <p className="text-xs text-gray-500 truncate max-w-[140px]">{chat.lastMessage}</p>
+                  <p className={`text-xs truncate max-w-[140px] ${chat.status === 'secure' ? 'text-gray-500' : 'text-gray-400'}`}>
+                    {chat.status === 'secure' ? chat.lastMessage : chat.status.toUpperCase()}
+                  </p>
                   {chat.unread > 0 && (
                     <span className="bg-primary text-black text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">
                       {chat.unread}

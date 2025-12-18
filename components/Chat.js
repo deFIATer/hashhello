@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Send, Phone, Shield, AlertTriangle, Loader2, User, LogOut, Lock, Signal, Wifi, Menu, X, MessageSquare, ChevronLeft, Paperclip, Image as ImageIcon, RefreshCw, Download, Edit2, Check } from 'lucide-react';
+import { Send, Phone, Shield, AlertTriangle, Loader2, User, LogOut, Lock, Signal, Wifi, Menu, X, MessageSquare, ChevronLeft, Paperclip, Image as ImageIcon, RefreshCw, Download, Edit2, Check, Mic, Square, Trash2, PhoneOff, MicOff, PhoneIncoming } from 'lucide-react';
 import { deriveSharedSecret, encryptMessage, decryptMessage, verifyIdentity, importPublicKey, encryptStorageData, decryptStorageData } from '../lib/crypto';
 import { playSound } from '../lib/audio';
 
@@ -22,6 +22,144 @@ export default function Chat({ identity, onLogout }) {
   const messagesEndRef = useRef(null);
   const chatsRef = useRef({}); // Ref to access latest chats state in callbacks if needed
   const fileInputRef = useRef(null);
+
+  // Audio Recording State
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const timerIntervalRef = useRef(null);
+  const isRecordingCancelledRef = useRef(false);
+  const audioContextRef = useRef(null);
+  const analyserRef = useRef(null);
+  const canvasRef = useRef(null);
+  const animationFrameRef = useRef(null);
+
+  // Call State
+  const [incomingCall, setIncomingCall] = useState(null);
+  const [activeCall, setActiveCall] = useState(null);
+  const [callStatus, setCallStatus] = useState('idle'); // 'idle', 'ringing', 'calling', 'connected'
+  const [isMuted, setIsMuted] = useState(false);
+  const localStreamRef = useRef(null);
+  const remoteAudioRef = useRef(null);
+
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const startRecording = async () => {
+    try {
+      isRecordingCancelledRef.current = false;
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      
+      // Audio Analysis Setup
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const analyser = audioContext.createAnalyser();
+      const source = audioContext.createMediaStreamSource(stream);
+      source.connect(analyser);
+      analyser.fftSize = 64; // Low fftSize for fewer bars (chunkier look)
+      
+      audioContextRef.current = audioContext;
+      analyserRef.current = analyser;
+
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        // Cleanup Audio Context
+        if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+        if (audioContextRef.current) audioContextRef.current.close();
+
+        if (isRecordingCancelledRef.current) {
+          stream.getTracks().forEach(track => track.stop());
+          return;
+        }
+
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const reader = new FileReader();
+        reader.readAsDataURL(audioBlob);
+        reader.onloadend = async () => {
+          const base64Audio = reader.result;
+          await sendMessage({ type: 'audio', content: base64Audio });
+        };
+        
+        // Stop all tracks to release microphone
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+      setRecordingTime(0);
+      timerIntervalRef.current = setInterval(() => {
+        setRecordingTime(prev => prev + 1);
+      }, 1000);
+      
+      // Start visualization loop
+      const draw = () => {
+        if (!analyserRef.current || !canvasRef.current) return;
+        
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext('2d');
+        const bufferLength = analyserRef.current.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
+        
+        analyserRef.current.getByteFrequencyData(dataArray);
+        
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        const barWidth = (canvas.width / bufferLength) * 2;
+        let barHeight;
+        let x = 0;
+        
+        for(let i = 0; i < bufferLength; i++) {
+          barHeight = (dataArray[i] / 255) * canvas.height;
+          
+          // Gradient red color
+          ctx.fillStyle = `rgba(239, 68, 68, ${dataArray[i] / 255})`;
+          // Rounded bars
+          ctx.beginPath();
+          ctx.roundRect(x, canvas.height - barHeight, barWidth - 2, barHeight, 4);
+          ctx.fill();
+          
+          x += barWidth;
+        }
+        
+        animationFrameRef.current = requestAnimationFrame(draw);
+      };
+      draw();
+
+      playSound('click');
+    } catch (err) {
+      console.error("Error accessing microphone:", err);
+      alert("Could not access microphone. Please check permissions.");
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current);
+        timerIntervalRef.current = null;
+      }
+      playSound('click');
+    }
+  };
+
+  const cancelRecording = () => {
+    isRecordingCancelledRef.current = true;
+    stopRecording();
+  };
 
   // Update ref when state changes
   useEffect(() => {
@@ -174,6 +312,14 @@ export default function Chat({ identity, onLogout }) {
           playSound('connect');
           notify('Incoming Connection', `New connection request from ${formatDisplayNumber(conn.peer)}`);
           handleIncomingConnection(conn);
+        });
+
+        newPeer.on('call', (call) => {
+          console.log('Incoming call from:', call.peer);
+          setIncomingCall({ call, peerId: call.peer });
+          setCallStatus('ringing');
+          playSound('ringtone'); // Ensure you have a ringtone sound or use 'connect' for now
+          notify('Incoming Call', `Incoming call from ${formatDisplayNumber(call.peer)}`);
         });
 
         newPeer.on('error', (err) => {
@@ -582,6 +728,108 @@ export default function Chat({ identity, onLogout }) {
     setDialNumber(formatted);
   };
 
+  // Call Functions
+  const startCall = async () => {
+    if (!activeChatId || !peer) return;
+    
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      localStreamRef.current = stream;
+      
+      const call = peer.call(activeChatId, stream);
+      setActiveCall(call);
+      setCallStatus('calling');
+      
+      call.on('stream', (remoteStream) => {
+        if (remoteAudioRef.current) {
+          remoteAudioRef.current.srcObject = remoteStream;
+          remoteAudioRef.current.play();
+        }
+        setCallStatus('connected');
+      });
+
+      call.on('close', () => {
+        endCall();
+      });
+
+      call.on('error', (err) => {
+        console.error("Call error:", err);
+        endCall();
+      });
+
+    } catch (err) {
+      console.error("Failed to get local stream", err);
+      alert("Could not access microphone.");
+    }
+  };
+
+  const answerCall = async () => {
+    if (!incomingCall) return;
+    
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      localStreamRef.current = stream;
+      
+      incomingCall.call.answer(stream);
+      setActiveCall(incomingCall.call);
+      setCallStatus('connected');
+      setIncomingCall(null);
+
+      incomingCall.call.on('stream', (remoteStream) => {
+        if (remoteAudioRef.current) {
+          remoteAudioRef.current.srcObject = remoteStream;
+          remoteAudioRef.current.play();
+        }
+      });
+
+      incomingCall.call.on('close', () => {
+        endCall();
+      });
+
+      incomingCall.call.on('error', (err) => {
+        console.error("Call error:", err);
+        endCall();
+      });
+
+    } catch (err) {
+      console.error("Failed to get local stream", err);
+      alert("Could not access microphone.");
+      rejectCall();
+    }
+  };
+
+  const rejectCall = () => {
+    if (incomingCall) {
+      incomingCall.call.close();
+      setIncomingCall(null);
+      setCallStatus('idle');
+    }
+  };
+
+  const endCall = () => {
+    if (activeCall) {
+      activeCall.close();
+    }
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => track.stop());
+      localStreamRef.current = null;
+    }
+    setActiveCall(null);
+    setCallStatus('idle');
+    setIncomingCall(null);
+    setIsMuted(false);
+  };
+
+  const toggleMute = () => {
+    if (localStreamRef.current) {
+      const audioTrack = localStreamRef.current.getAudioTracks()[0];
+      if (audioTrack) {
+        audioTrack.enabled = !audioTrack.enabled;
+        setIsMuted(!audioTrack.enabled);
+      }
+    }
+  };
+
   const activeChat = activeChatId ? chats[activeChatId] : null;
 
   return (
@@ -736,6 +984,16 @@ export default function Chat({ identity, onLogout }) {
                   )}
                 </p>
               </div>
+              
+              {activeChat.status === 'secure' && (
+                <button 
+                  onClick={startCall}
+                  className="p-2 bg-white/5 text-primary rounded-full hover:bg-primary hover:text-black transition-all"
+                  title="Call"
+                >
+                  <Phone size={20} />
+                </button>
+              )}
             </header>
 
             {/* Messages */}
@@ -767,6 +1025,10 @@ export default function Chat({ identity, onLogout }) {
                         />
                         {msg.content.fileName && <p className="text-[10px] opacity-50 truncate max-w-[200px]">{msg.content.fileName}</p>}
                       </div>
+                    ) : msg.content.type === 'audio' ? (
+                        <div className="min-w-[200px] py-1">
+                            <audio controls src={msg.content.content} className="w-full h-8 max-w-[240px]" />
+                        </div>
                     ) : (
                       <p className="font-mono text-sm leading-relaxed whitespace-pre-wrap break-words">{msg.content.content}</p>
                     )}
@@ -783,41 +1045,82 @@ export default function Chat({ identity, onLogout }) {
             {/* Input */}
             <div className="p-4 border-t border-white/5 bg-black/40 backdrop-blur-md">
               <div className="flex gap-3 items-end">
-                <input 
-                  type="file" 
-                  ref={fileInputRef} 
-                  onChange={handleFileSelect} 
-                  accept="image/*" 
-                  className="hidden" 
-                />
-                <button
-                  onClick={() => {
-                    fileInputRef.current?.click();
-                    playSound('click');
-                  }}
-                  disabled={activeChat.status !== 'secure'}
-                  className="p-3 bg-white/5 text-gray-400 rounded-xl hover:bg-white/10 hover:text-white disabled:opacity-50 transition-all"
-                  title="Send Image"
-                >
-                  <Paperclip size={20} />
-                </button>
+                {isRecording ? (
+                  <div className="flex-1 flex items-center gap-4 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 animate-in fade-in duration-200">
+                    <div className="w-3 h-3 rounded-full bg-red-500 animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.5)]" />
+                    <span className="font-mono text-red-500 text-sm font-bold tracking-wider min-w-[40px]">{formatTime(recordingTime)}</span>
+                    
+                    <div className="flex-1 h-8 flex items-center justify-center overflow-hidden mx-2">
+                      <canvas ref={canvasRef} width={200} height={32} className="w-full h-full" />
+                    </div>
 
-                <input
-                  type="text"
-                  value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
-                  disabled={activeChat.status !== 'secure'}
-                  placeholder="Type a secure message..."
-                  className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 font-mono text-sm text-white focus:border-primary/50 focus:outline-none disabled:opacity-50"
-                />
-                <button
-                  onClick={() => sendMessage()}
-                  disabled={activeChat.status !== 'secure' || !inputValue.trim()}
-                  className="p-3 bg-primary text-black rounded-xl hover:bg-[#00cc6a] disabled:opacity-50 transition-all"
-                >
-                  <Send size={20} />
-                </button>
+                    <button 
+                      onClick={cancelRecording}
+                      className="p-2 text-red-500 hover:bg-red-500/20 rounded-lg transition-colors mr-2"
+                      title="Cancel Recording"
+                    >
+                      <Trash2 size={18} />
+                    </button>
+
+                    <button 
+                      onClick={stopRecording}
+                      className="p-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors shadow-lg"
+                      title="Send Recording"
+                    >
+                      <Send size={16} fill="currentColor" />
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <input 
+                      type="file" 
+                      ref={fileInputRef} 
+                      onChange={handleFileSelect} 
+                      accept="image/*" 
+                      className="hidden" 
+                    />
+                    <button
+                      onClick={() => {
+                        fileInputRef.current?.click();
+                        playSound('click');
+                      }}
+                      disabled={activeChat.status !== 'secure'}
+                      className="p-3 bg-white/5 text-gray-400 rounded-xl hover:bg-white/10 hover:text-white disabled:opacity-50 transition-all"
+                      title="Send Image"
+                    >
+                      <Paperclip size={20} />
+                    </button>
+
+                    <input
+                      type="text"
+                      value={inputValue}
+                      onChange={(e) => setInputValue(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
+                      disabled={activeChat.status !== 'secure'}
+                      placeholder="Type a secure message..."
+                      className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 font-mono text-sm text-white focus:border-primary/50 focus:outline-none disabled:opacity-50"
+                    />
+                    
+                    {inputValue.trim() ? (
+                      <button
+                        onClick={() => sendMessage()}
+                        disabled={activeChat.status !== 'secure'}
+                        className="p-3 bg-primary text-black rounded-xl hover:bg-[#00cc6a] disabled:opacity-50 transition-all"
+                      >
+                        <Send size={20} />
+                      </button>
+                    ) : (
+                      <button
+                        onClick={startRecording}
+                        disabled={activeChat.status !== 'secure'}
+                        className="p-3 bg-white/5 text-gray-400 rounded-xl hover:bg-white/10 hover:text-white disabled:opacity-50 transition-all"
+                        title="Record Voice Message"
+                      >
+                        <Mic size={20} />
+                      </button>
+                    )}
+                  </>
+                )}
               </div>
             </div>
           </>
@@ -833,6 +1136,71 @@ export default function Chat({ identity, onLogout }) {
           </div>
         )}
       </div>
+
+      {/* Incoming Call Modal */}
+      {incomingCall && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm animate-in fade-in duration-300">
+          <div className="bg-gray-900 border border-white/10 p-8 rounded-2xl shadow-2xl flex flex-col items-center space-y-6 max-w-sm w-full mx-4">
+            <div className="w-24 h-24 rounded-full bg-primary/20 flex items-center justify-center animate-pulse">
+              <PhoneIncoming size={48} className="text-primary" />
+            </div>
+            <div className="text-center">
+              <h3 className="text-xl font-bold text-white mb-1">{formatDisplayNumber(incomingCall.peerId)}</h3>
+              <p className="text-gray-400 font-mono text-sm">Incoming Secure Call...</p>
+            </div>
+            <div className="flex gap-4 w-full">
+              <button 
+                onClick={rejectCall}
+                className="flex-1 py-3 bg-red-500/20 text-red-500 rounded-xl hover:bg-red-500 hover:text-white transition-all flex items-center justify-center gap-2 font-bold"
+              >
+                <PhoneOff size={20} /> Decline
+              </button>
+              <button 
+                onClick={answerCall}
+                className="flex-1 py-3 bg-primary text-black rounded-xl hover:bg-[#00cc6a] transition-all flex items-center justify-center gap-2 font-bold shadow-[0_0_20px_rgba(0,255,136,0.3)]"
+              >
+                <Phone size={20} /> Answer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Active Call Overlay */}
+      {(activeCall || callStatus === 'calling') && (
+        <div className="absolute top-4 right-4 z-50 bg-gray-900 border border-white/10 p-4 rounded-2xl shadow-2xl flex flex-col items-center space-y-4 w-64 animate-in slide-in-from-top-4 duration-300">
+          <div className="flex items-center gap-3 w-full">
+            <div className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center">
+              <User size={20} className="text-gray-400" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h4 className="font-bold text-white text-sm truncate">
+                {activeCall ? formatDisplayNumber(activeCall.peer) : formatDisplayNumber(activeChatId)}
+              </h4>
+              <p className="text-xs text-primary font-mono animate-pulse">
+                {callStatus === 'calling' ? 'Calling...' : 'Connected'}
+              </p>
+            </div>
+          </div>
+          
+          <div className="flex gap-2 w-full">
+            <button 
+              onClick={toggleMute}
+              className={`flex-1 p-3 rounded-xl transition-all flex items-center justify-center ${isMuted ? 'bg-white/20 text-white' : 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'}`}
+            >
+              {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
+            </button>
+            <button 
+              onClick={endCall}
+              className="flex-1 p-3 bg-red-500 text-white rounded-xl hover:bg-red-600 transition-all flex items-center justify-center shadow-lg"
+            >
+              <PhoneOff size={20} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      <audio ref={remoteAudioRef} className="hidden" />
     </div>
   );
 }

@@ -13,9 +13,13 @@ export default function Login({ onLogin }) {
   const [hasEncryptedSession, setHasEncryptedSession] = useState(false);
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [savedNumber, setSavedNumber] = useState('');
 
   useEffect(() => {
     const encrypted = localStorage.getItem('hellofrom_encrypted_identity');
+    const num = localStorage.getItem('hellofrom_saved_number');
+    if (num) setSavedNumber(num);
+    
     if (encrypted) {
       setHasEncryptedSession(true);
       setMode('unlock');
@@ -58,6 +62,7 @@ export default function Login({ onLogin }) {
         data: encryptedIdentity.data
       };
       localStorage.setItem('hellofrom_encrypted_identity', JSON.stringify(storageObj));
+      localStorage.setItem('hellofrom_saved_number', generatedData.phoneNumber);
 
       // 5. Login
       onLogin({
@@ -114,6 +119,7 @@ export default function Login({ onLogin }) {
       localStorage.removeItem('hellofrom_encrypted_identity');
       localStorage.removeItem('hellofrom_encrypted_chats');
       localStorage.removeItem('hellofrom_encrypted_contacts');
+      localStorage.removeItem('hellofrom_saved_number');
       localStorage.removeItem('hellofrom_chats'); // Cleanup old
       localStorage.removeItem('hellofrom_contacts'); // Cleanup old
       localStorage.removeItem('hashhello_identity'); // Cleanup old
@@ -134,16 +140,28 @@ export default function Login({ onLogin }) {
             <Lock className="w-8 h-8 text-primary" />
           </div>
           <h1 className="text-2xl font-bold text-white tracking-tighter">Unlock #hello</h1>
+          {savedNumber && <p className="text-xs text-gray-500 font-mono">{savedNumber}</p>}
         </div>
 
-        <div className="space-y-4">
+        <form onSubmit={(e) => { e.preventDefault(); handleUnlock(); }} className="space-y-4">
+          {/* Hidden username for password manager association */}
+          <input 
+            type="text" 
+            name="username" 
+            autoComplete="username" 
+            value={savedNumber} 
+            readOnly 
+            className="hidden" 
+          />
+
           <div>
             <label className="text-xs text-gray-500 font-mono uppercase mb-1 block">Master Password</label>
             <input
               type="password"
+              name="password"
+              autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleUnlock()}
               className="w-full bg-black/50 border border-white/10 rounded-lg px-4 py-3 text-white font-mono focus:border-primary/50 focus:outline-none transition-colors"
               placeholder="Enter your password..."
               autoFocus
@@ -157,7 +175,7 @@ export default function Login({ onLogin }) {
           )}
 
           <button
-            onClick={handleUnlock}
+            type="submit"
             disabled={loading || !password}
             className="w-full bg-primary text-black font-bold py-3 rounded-lg hover:bg-[#00cc6a] transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
           >
@@ -166,11 +184,11 @@ export default function Login({ onLogin }) {
           </button>
 
           <div className="pt-4 border-t border-white/5 text-center">
-            <button onClick={handleReset} className="text-xs text-red-500/50 hover:text-red-500 transition-colors font-mono">
+            <button type="button" onClick={handleReset} className="text-xs text-red-500/50 hover:text-red-500 transition-colors font-mono">
               Forgot Password? Reset Account
             </button>
           </div>
-        </div>
+        </form>
       </div>
     );
   }
@@ -185,7 +203,7 @@ export default function Login({ onLogin }) {
         <h1 className="text-3xl font-bold text-white tracking-tighter flex items-center gap-2 text-glow">
           #hello
         </h1>
-        <p className="text-xs text-gray-500 font-mono uppercase tracking-widest">Secure P2P Terminal</p>
+        <p className="text-xs text-gray-500 font-mono uppercase tracking-widest">Secure P2P Messenger</p>
       </div>
 
       {!generatedData ? (
@@ -223,9 +241,21 @@ export default function Login({ onLogin }) {
               <br/><span className="text-red-400">If you lose it, your data is lost forever.</span>
             </p>
             
-            <div className="space-y-2">
+            <form onSubmit={(e) => { e.preventDefault(); handleCreateAccount(); }} className="space-y-2">
+              {/* Hidden username for password manager association */}
+              <input 
+                type="text" 
+                name="username" 
+                autoComplete="username" 
+                value={generatedData.formattedNumber} 
+                readOnly 
+                className="hidden" 
+              />
+              
               <input
                 type="password"
+                name="new-password"
+                autoComplete="new-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm text-white font-mono focus:border-primary/50 focus:outline-none"
@@ -233,28 +263,30 @@ export default function Login({ onLogin }) {
               />
               <input
                 type="password"
+                name="confirm-password"
+                autoComplete="new-password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 className="w-full bg-black/50 border border-white/10 rounded px-3 py-2 text-sm text-white font-mono focus:border-primary/50 focus:outline-none"
                 placeholder="Confirm Password"
               />
-            </div>
+              
+              {error && (
+                <div className="text-red-400 text-xs text-center font-mono">
+                  {error}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full bg-primary text-black font-bold py-3 rounded-lg hover:bg-[#00cc6a] transition-all disabled:opacity-50 flex items-center justify-center gap-2 mt-4"
+              >
+                {loading ? <span className="animate-spin">⌛</span> : <Save size={18} />}
+                ENCRYPT & ENTER
+              </button>
+            </form>
           </div>
-
-          {error && (
-            <div className="text-red-400 text-xs text-center font-mono">
-              {error}
-            </div>
-          )}
-
-          <button
-            onClick={handleCreateAccount}
-            disabled={loading}
-            className="w-full bg-primary text-black font-bold py-3 rounded-lg hover:bg-[#00cc6a] transition-all disabled:opacity-50 flex items-center justify-center gap-2"
-          >
-            {loading ? <span className="animate-spin">⌛</span> : <Save size={18} />}
-            ENCRYPT & ENTER
-          </button>
         </div>
       )}
     </div>

@@ -405,6 +405,11 @@ export default function Chat({ identity, onLogout }) {
   };
 
   const exportData = async () => {
+    if (!identity.masterKey) {
+      alert("Security Error: Master Key not available for export.");
+      return;
+    }
+
     let privateKeyJwk = null;
     try {
       if (identity.keyPair && identity.keyPair.privateKey) {
@@ -414,7 +419,7 @@ export default function Chat({ identity, onLogout }) {
       console.error("Failed to export private key", e);
     }
 
-    const backup = {
+    const backupData = {
       identity: {
         phoneNumber: identity.phoneNumber,
         publicKeyJwk: identity.publicKeyJwk,
@@ -423,13 +428,13 @@ export default function Chat({ identity, onLogout }) {
       chats: {},
       contacts: contacts,
       timestamp: Date.now(),
-      version: '1.0'
+      version: '2.0' // Encrypted version
     };
 
     // Clean chats for export
     Object.keys(chats).forEach(key => {
       const chat = chats[key];
-      backup.chats[key] = {
+      backupData.chats[key] = {
         id: chat.id,
         messages: chat.messages,
         status: 'disconnected',
@@ -439,15 +444,42 @@ export default function Chat({ identity, onLogout }) {
       };
     });
 
-    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `hellofrom-backup-${identity.phoneNumber}-${new Date().toISOString().slice(0,10)}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    try {
+      // Get current salt to include in backup (so we can derive the same key)
+      const storedIdentity = localStorage.getItem('hellofrom_encrypted_identity');
+      let salt = null;
+      if (storedIdentity) {
+          const parsed = JSON.parse(storedIdentity);
+          salt = parsed.salt;
+      }
+
+      if (!salt) {
+        throw new Error("Could not retrieve encryption salt.");
+      }
+
+      // Encrypt the entire backup payload
+      const encrypted = await encryptStorageData(backupData, identity.masterKey);
+      
+      const finalBackup = {
+        version: 2,
+        salt: salt,
+        iv: encrypted.iv,
+        data: encrypted.data
+      };
+
+      const blob = new Blob([JSON.stringify(finalBackup)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `hellofrom-secure-backup-${identity.phoneNumber}-${new Date().toISOString().slice(0,10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("Export failed", e);
+      alert("Export failed: " + e.message);
+    }
   };
 
   const handleIncomingConnection = (conn) => {

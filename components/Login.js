@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { generateIdentity, importIdentity, deriveMasterKey, encryptStorageData, decryptStorageData } from '../lib/crypto';
-import { Copy, Key, LogIn, ShieldCheck, Terminal, Save, Lock, Unlock, Upload } from 'lucide-react';
+import { Copy, Key, LogIn, ShieldCheck, Terminal, Save, Lock, Unlock, Upload, Download } from 'lucide-react';
 
 export default function Login({ onLogin }) {
   const [mode, setMode] = useState('login'); // 'login' or 'create'
@@ -15,6 +15,10 @@ export default function Login({ onLogin }) {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [savedNumber, setSavedNumber] = useState('');
+  
+  // Import State
+  const [pendingBackup, setPendingBackup] = useState(null); // { salt, iv, data }
+  const [importPassword, setImportPassword] = useState('');
 
   useEffect(() => {
     const encrypted = localStorage.getItem('hellofrom_encrypted_identity');
@@ -151,14 +155,24 @@ export default function Login({ onLogin }) {
     const reader = new FileReader();
     reader.onload = async (event) => {
       try {
-        const backup = JSON.parse(event.target.result);
+        const json = JSON.parse(event.target.result);
+        
+        // Check if it's an encrypted backup (Version 2)
+        if (json.version === 2 && json.salt && json.iv && json.data) {
+          setPendingBackup(json);
+          setMode('decrypt_backup');
+          return;
+        }
+
+        // Legacy/Plaintext Backup (Version 1 or raw key)
+        // This handles "import existing private key" if user provides a JSON with keys
+        const backup = json;
         
         if (!backup.identity || !backup.identity.privateKeyJwk || !backup.identity.publicKeyJwk) {
-             throw new Error("Backup must contain a private key (identity.privateKeyJwk)");
+             throw new Error("Invalid backup format. Missing keys.");
         }
 
         // Reconstruct identity object compatible with generateIdentity output
-        // We need to create the loginKey (base64 encoded JSON)
         const identityObject = {
             phoneNumber: backup.identity.phoneNumber,
             privateKey: backup.identity.privateKeyJwk,
@@ -176,27 +190,8 @@ export default function Login({ onLogin }) {
             publicKeyJwk: backup.identity.publicKeyJwk
         });
 
-        // If backup has chats/contacts, we should probably save them to localStorage temporarily
-        // or just let them be overwritten when the user logs in?
-        // Actually, we should probably restore them AFTER the user sets the master password.
-        // But we don't have the master password yet.
-        // So we can store the raw backup in memory or a temp variable?
-        // Let's just store the raw backup in a ref or state to be processed in handleCreateAccount?
-        // Or simpler: Just restore the identity now, and let the user manually import chats later?
-        // The user said "import existing private key OR whole backup".
-        // If it's a whole backup, we should restore chats too.
-        
-        // Let's save the backup data to localStorage UNENCRYPTED temporarily? No, that's bad.
-        // We can keep it in memory.
-        // But handleCreateAccount reloads the page? No, it calls onLogin.
-        
-        // Let's modify handleCreateAccount to check for pending backup data.
-        if (backup.chats) {
-            window.pendingBackupChats = backup.chats;
-        }
-        if (backup.contacts) {
-            window.pendingBackupContacts = backup.contacts;
-        }
+        if (backup.chats) window.pendingBackupChats = backup.chats;
+        if (backup.contacts) window.pendingBackupContacts = backup.contacts;
 
       } catch (err) {
         console.error(err);
@@ -204,6 +199,68 @@ export default function Login({ onLogin }) {
       }
     };
     reader.readAsText(file);
+  };
+
+  const handleDecryptBackup = async () => {
+    if (!importPassword || !pendingBackup) return;
+    setLoading(true);
+    setError('');
+
+    try {
+      const salt = new Uint8Array(pendingBackup.salt);
+      const masterKey = await deriveMasterKey(importPassword, salt);
+      
+      const decrypted = await decryptStorageData({
+        iv: pendingBackup.iv,
+        data: pendingBackup.data
+      }, masterKey);
+
+      // Decrypted contains { identity, chats, contacts }
+      // We need to restore this to localStorage
+      
+      // 1. Re-encrypt Identity for storage (using the SAME master key/password)
+      // We need to reconstruct the loginKey string first
+      const identityObject = {
+          phoneNumber: decrypted.identity.phoneNumber,
+          privateKey: decrypted.identity.privateKeyJwk,
+          publicKey: decrypted.identity.publicKeyJwk
+      };
+      const loginKey = btoa(JSON.stringify(identityObject));
+      
+      const encryptedIdentity = await encryptStorageData(loginKey, masterKey);
+      
+      // 2. Save Identity
+      const storageObj = {
+        salt: Array.from(salt), // Reuse the salt from backup
+        iv: encryptedIdentity.iv,
+        data: encryptedIdentity.data
+      };
+      localStorage.setItem('hellofrom_encrypted_identity', JSON.stringify(storageObj));
+      localStorage.setItem('hellofrom_saved_number', decrypted.identity.phoneNumber);
+
+      // 3. Save Chats & Contacts
+      if (decrypted.chats) {
+        const encChats = await encryptStorageData(decrypted.chats, masterKey);
+        localStorage.setItem('hellofrom_encrypted_chats', JSON.stringify(encChats));
+      }
+      if (decrypted.contacts) {
+        const encContacts = await encryptStorageData(decrypted.contacts, masterKey);
+        localStorage.setItem('hellofrom_encrypted_contacts', JSON.stringify(encContacts));
+      }
+
+      // 4. Login
+      const importedIdentity = await importIdentity(loginKey);
+      onLogin({
+        ...importedIdentity,
+        publicKeyJwk: decrypted.identity.publicKeyJwk,
+        masterKey: masterKey
+      });
+
+    } catch (e) {
+      console.error(e);
+      setError("Incorrect password or corrupted backup.");
+    }
+    setLoading(false);
   };
 
   // Render Unlock Screen
@@ -261,6 +318,59 @@ export default function Login({ onLogin }) {
           <div className="pt-4 border-t border-white/5 text-center">
             <button type="button" onClick={handleReset} className="text-xs text-red-500/50 hover:text-red-500 transition-colors font-mono">
               Forgot Password? Reset Account
+            </button>
+          </div>
+        </form>
+      </div>
+    );
+  }
+
+  // Render Decrypt Backup Screen
+  if (mode === 'decrypt_backup') {
+    return (
+      <div className="w-full max-w-md p-6 md:p-8 glass-panel rounded-2xl shadow-[0_0_50px_-12px_rgba(0,255,136,0.1)] animate-in fade-in zoom-in duration-500 mx-4">
+        <div className="flex flex-col items-center justify-center mb-8 space-y-2">
+          <div className="p-3 bg-primary/10 rounded-full ring-1 ring-primary/30 shadow-[0_0_15px_rgba(0,255,136,0.2)]">
+            <Download className="w-8 h-8 text-primary" />
+          </div>
+          <h1 className="text-2xl font-bold text-white tracking-tighter">Decrypt Backup</h1>
+          <p className="text-xs text-gray-500 font-mono">Enter the password used to encrypt this backup.</p>
+        </div>
+
+        <form onSubmit={(e) => { e.preventDefault(); handleDecryptBackup(); }} className="space-y-4">
+          <div>
+            <label className="text-xs text-gray-500 font-mono uppercase mb-1 block">Backup Password</label>
+            <input
+              type="password"
+              value={importPassword}
+              onChange={(e) => setImportPassword(e.target.value)}
+              className="w-full bg-black/50 border border-white/10 rounded-lg px-4 py-3 text-white font-mono focus:border-primary/50 focus:outline-none transition-colors"
+              placeholder="Enter backup password..."
+              autoFocus
+            />
+          </div>
+
+          {error && (
+            <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-xs font-mono flex items-center gap-2">
+              <span>!</span> {error}
+            </div>
+          )}
+
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={() => { setMode('create'); setPendingBackup(null); setImportPassword(''); setError(''); }}
+              className="flex-1 bg-white/5 text-white font-bold py-3 rounded-lg hover:bg-white/10 transition-all"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={loading || !importPassword}
+              className="flex-1 bg-primary text-black font-bold py-3 rounded-lg hover:bg-[#00cc6a] transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              {loading ? <span className="animate-spin">⌛</span> : <Unlock size={18} />}
+              DECRYPT
             </button>
           </div>
         </form>

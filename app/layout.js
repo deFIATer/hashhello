@@ -9,6 +9,9 @@ export const metadata = {
     statusBarStyle: 'black-translucent',
     title: '#hello',
   },
+  other: {
+    'mobile-web-app-capable': 'yes',
+  },
 };
 
 export const viewport = {

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Send, Phone, Shield, AlertTriangle, Loader2, User, LogOut, Lock, Signal, Wifi, Menu, X, MessageSquare, ChevronLeft, Paperclip, Image as ImageIcon } from 'lucide-react';
+import { Send, Phone, Shield, AlertTriangle, Loader2, User, LogOut, Lock, Signal, Wifi, Menu, X, MessageSquare, ChevronLeft, Paperclip, Image as ImageIcon, RefreshCw, Download, Edit2, Check } from 'lucide-react';
 import { deriveSharedSecret, encryptMessage, decryptMessage, verifyIdentity, importPublicKey } from '../lib/crypto';
 import { playSound } from '../lib/audio';
 
@@ -11,6 +11,9 @@ export default function Chat({ identity, onLogout }) {
   // Structure: { [peerId]: { id: string, conn: DataConnection, messages: [], status: 'connecting'|'secure'|'disconnected', unread: 0, lastMessage: '' } }
   const [chats, setChats] = useState({});
   const [activeChatId, setActiveChatId] = useState(null);
+  const [contacts, setContacts] = useState({}); // { [phoneNumber]: "Custom Name" }
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [editingNameValue, setEditingNameValue] = useState('');
   
   const [dialNumber, setDialNumber] = useState('');
   const [inputValue, setInputValue] = useState('');
@@ -24,6 +27,65 @@ export default function Chat({ identity, onLogout }) {
   useEffect(() => {
     chatsRef.current = chats;
   }, [chats]);
+
+  // Load chats from localStorage on mount
+  useEffect(() => {
+    const savedChats = localStorage.getItem('hellofrom_chats');
+    if (savedChats) {
+      try {
+        const parsed = JSON.parse(savedChats);
+        const hydrated = {};
+        Object.keys(parsed).forEach(key => {
+          hydrated[key] = {
+            ...parsed[key],
+            conn: null,
+            status: 'disconnected'
+          };
+        });
+        setChats(hydrated);
+      } catch (e) {
+        console.error("Failed to load chats from storage", e);
+      }
+    }
+
+    const savedContacts = localStorage.getItem('hellofrom_contacts');
+    if (savedContacts) {
+      try {
+        setContacts(JSON.parse(savedContacts));
+      } catch (e) {
+        console.error("Failed to load contacts", e);
+      }
+    }
+  }, []);
+
+  // Save chats to localStorage whenever they change
+  useEffect(() => {
+    if (Object.keys(chats).length === 0) return;
+
+    const toSave = {};
+    Object.keys(chats).forEach(key => {
+      const chat = chats[key];
+      toSave[key] = {
+        id: chat.id,
+        messages: chat.messages,
+        status: 'disconnected', // Always save as disconnected
+        unread: chat.unread,
+        lastMessage: chat.lastMessage,
+        timestamp: chat.timestamp
+      };
+    });
+
+    try {
+      localStorage.setItem('hellofrom_chats', JSON.stringify(toSave));
+    } catch (e) {
+      console.error("Failed to save chats to storage (quota exceeded?)", e);
+    }
+  }, [chats]);
+
+  // Save contacts
+  useEffect(() => {
+    localStorage.setItem('hellofrom_contacts', JSON.stringify(contacts));
+  }, [contacts]);
 
   // Request notification permission
   useEffect(() => {
@@ -121,6 +183,53 @@ export default function Chat({ identity, onLogout }) {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chats, activeChatId]);
+
+  const handleManualReconnect = () => {
+    if (peer && !peer.destroyed) {
+      console.log('Manual reconnection attempt...');
+      peer.reconnect();
+    } else {
+      window.location.reload();
+    }
+  };
+
+  const exportData = () => {
+    const backup = {
+      identity: {
+        phoneNumber: identity.phoneNumber,
+        // We don't export private keys for security in this simple backup, 
+        // but we include public info.
+        publicKeyJwk: identity.publicKeyJwk
+      },
+      chats: {},
+      contacts: contacts,
+      timestamp: Date.now(),
+      version: '1.0'
+    };
+
+    // Clean chats for export
+    Object.keys(chats).forEach(key => {
+      const chat = chats[key];
+      backup.chats[key] = {
+        id: chat.id,
+        messages: chat.messages,
+        status: 'disconnected',
+        unread: chat.unread,
+        lastMessage: chat.lastMessage,
+        timestamp: chat.timestamp
+      };
+    });
+
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `hellofrom-backup-${identity.phoneNumber}-${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
   const handleIncomingConnection = (conn) => {
     setupConnection(conn, false);
@@ -374,8 +483,23 @@ export default function Chat({ identity, onLogout }) {
 
   const formatDisplayNumber = (num) => {
     if (!num) return '...';
+    if (contacts[num]) return contacts[num];
     const p = num.toString().padStart(9, '0');
     return `#${p.slice(0, 3)} ${p.slice(3, 6)} ${p.slice(6)}`;
+  };
+
+  const saveContactName = () => {
+    if (!activeChatId) return;
+    setContacts(prev => ({
+      ...prev,
+      [activeChatId]: editingNameValue.trim()
+    }));
+    setIsEditingName(false);
+  };
+
+  const startEditingName = () => {
+    setEditingNameValue(contacts[activeChatId] || '');
+    setIsEditingName(true);
   };
 
   const handleNumberChange = (e) => {
@@ -409,10 +533,18 @@ export default function Chat({ identity, onLogout }) {
             <div className="flex items-center gap-2 text-[10px] text-gray-500 font-mono uppercase tracking-widest mt-1">
               <Signal size={10} className={status === 'online' ? 'text-primary' : 'text-red-500'} />
               {status === 'online' ? 'ONLINE' : 'OFFLINE'}
+              {status !== 'online' && (
+                <button onClick={handleManualReconnect} className="ml-1 hover:text-white transition-colors" title="Reconnect">
+                  <RefreshCw size={10} />
+                </button>
+              )}
             </div>
           </div>
-          <button onClick={onLogout} className="text-gray-500 hover:text-white transition-colors">
+          <button onClick={onLogout} className="text-gray-500 hover:text-white transition-colors" title="Logout">
             <LogOut size={18} />
+          </button>
+          <button onClick={exportData} className="text-gray-500 hover:text-white transition-colors ml-2" title="Export Backup">
+            <Download size={18} />
           </button>
         </div>
 
@@ -426,6 +558,7 @@ export default function Chat({ identity, onLogout }) {
               placeholder="600 500 600"
               value={dialNumber}
               onChange={handleNumberChange}
+              onKeyDown={(e) => e.key === 'Enter' && connect()}
               className="w-full bg-white/5 border border-white/10 rounded px-3 py-2 font-mono text-sm text-white focus:border-primary/50 focus:outline-none"
             />
             <button
@@ -492,10 +625,33 @@ export default function Chat({ identity, onLogout }) {
                 <ChevronLeft size={24} />
               </button>
               <div className="flex-1">
-                <h2 className="font-bold text-white flex items-center gap-2">
-                  {formatDisplayNumber(activeChat.id)}
-                  {activeChat.status === 'secure' && <Lock size={14} className="text-primary" />}
-                </h2>
+                <div className="flex items-center gap-2">
+                  {isEditingName ? (
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={editingNameValue}
+                        onChange={(e) => setEditingNameValue(e.target.value)}
+                        className="bg-white/10 border border-white/20 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-primary"
+                        placeholder="Enter name..."
+                        autoFocus
+                        onKeyDown={(e) => e.key === 'Enter' && saveContactName()}
+                      />
+                      <button onClick={saveContactName} className="text-primary hover:text-white">
+                        <Check size={16} />
+                      </button>
+                      <button onClick={() => setIsEditingName(false)} className="text-red-500 hover:text-white">
+                        <X size={16} />
+                      </button>
+                    </div>
+                  ) : (
+                    <h2 className="font-bold text-white flex items-center gap-2 group cursor-pointer" onClick={startEditingName}>
+                      {formatDisplayNumber(activeChat.id)}
+                      {activeChat.status === 'secure' && <Lock size={14} className="text-primary" />}
+                      <Edit2 size={12} className="opacity-0 group-hover:opacity-50 transition-opacity text-gray-400" />
+                    </h2>
+                  )}
+                </div>
                 <p className="text-[10px] text-gray-500 font-mono uppercase tracking-widest">
                   {activeChat.status === 'secure' ? 'ENCRYPTED CHANNEL' : activeChat.status}
                 </p>

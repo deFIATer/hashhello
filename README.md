@@ -6,6 +6,8 @@ A secure, end-to-end encrypted P2P messenger running entirely in the browser.
 
 **Test Contact:** You can message me at `#333 831 177`
 
+> **Important:** To establish a P2P connection, the target number **must be online** and have the website open at the same time.
+
 ## Features
 
 - **Identity**: Your "Phone Number" (e.g., `#600 500 600`) is cryptographically derived from your Public Key.
@@ -14,6 +16,8 @@ A secure, end-to-end encrypted P2P messenger running entirely in the browser.
   - Perfect Forward Secrecy (per session keys via ECDH).
   - Identity Verification (Handshake verifies that the peer owns the private key corresponding to the phone number).
 - **Privacy**: No central database of messages. Communication is direct P2P via WebRTC.
+- **Multi-chat**: Support for multiple simultaneous encrypted conversations.
+- **Media**: Securely send and receive images (encrypted with the same session keys).
 
 ## Tech Stack
 

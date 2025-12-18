@@ -374,11 +374,13 @@ export default function Chat({ identity, onLogout }) {
         <div className="p-4 border-b border-white/5">
           <div className="flex gap-2">
             <input
-              type="text"
+              type="tel"
+              inputMode="numeric"
+              pattern="[0-9]*"
               placeholder="600 500 600"
               value={dialNumber}
               onChange={(e) => setDialNumber(e.target.value)}
-              className="w-full bg-white/5 border border-white/10 rounded px-3 py-2 font-mono text-xs text-white focus:border-primary/50 focus:outline-none"
+              className="w-full bg-white/5 border border-white/10 rounded px-3 py-2 font-mono text-sm text-white focus:border-primary/50 focus:outline-none"
             />
             <button
               onClick={connect}

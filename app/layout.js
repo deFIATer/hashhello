@@ -3,6 +3,20 @@ import "./globals.css";
 export const metadata = {
   title: "#hello | Secure P2P Messenger",
   description: "End-to-end encrypted P2P messenger",
+  manifest: '/manifest.json',
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'black-translucent',
+    title: '#hello',
+  },
+};
+
+export const viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  themeColor: '#000000',
 };
 
 export default function RootLayout({ children }) {

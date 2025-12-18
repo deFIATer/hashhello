@@ -2,6 +2,10 @@
 
 A secure, end-to-end encrypted P2P messenger running entirely in the browser.
 
+**Live Demo:** [https://hashhello.vercel.app](https://hashhello.vercel.app)
+
+**Test Contact:** You can message me at `#333 831 177`
+
 ## Features
 
 - **Identity**: Your "Phone Number" (e.g., `#600 500 600`) is cryptographically derived from your Public Key.

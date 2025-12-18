@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { generateIdentity, importIdentity, deriveMasterKey, encryptStorageData, decryptStorageData } from '../lib/crypto';
-import { Copy, Key, LogIn, ShieldCheck, Terminal, Save, Lock, Unlock } from 'lucide-react';
+import { Copy, Key, LogIn, ShieldCheck, Terminal, Save, Lock, Unlock, Upload } from 'lucide-react';
 
 export default function Login({ onLogin }) {
   const [mode, setMode] = useState('login'); // 'login' or 'create'
@@ -8,6 +8,7 @@ export default function Login({ onLogin }) {
   const [generatedData, setGeneratedData] = useState(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const fileInputRef = useRef(null);
   
   // Master Password State
   const [hasEncryptedSession, setHasEncryptedSession] = useState(false);
@@ -63,6 +64,18 @@ export default function Login({ onLogin }) {
       };
       localStorage.setItem('hellofrom_encrypted_identity', JSON.stringify(storageObj));
       localStorage.setItem('hellofrom_saved_number', generatedData.phoneNumber);
+
+      // 4b. Restore Backup Data if available
+      if (window.pendingBackupChats) {
+          const encryptedChats = await encryptStorageData(window.pendingBackupChats, masterKey);
+          localStorage.setItem('hellofrom_encrypted_chats', JSON.stringify(encryptedChats));
+          delete window.pendingBackupChats;
+      }
+      if (window.pendingBackupContacts) {
+          const encryptedContacts = await encryptStorageData(window.pendingBackupContacts, masterKey);
+          localStorage.setItem('hellofrom_encrypted_contacts', JSON.stringify(encryptedContacts));
+          delete window.pendingBackupContacts;
+      }
 
       // 5. Login
       onLogin({
@@ -129,6 +142,68 @@ export default function Login({ onLogin }) {
       setPassword('');
       setConfirmPassword('');
     }
+  };
+
+  const handleImport = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const backup = JSON.parse(event.target.result);
+        
+        if (!backup.identity || !backup.identity.privateKeyJwk || !backup.identity.publicKeyJwk) {
+             throw new Error("Backup must contain a private key (identity.privateKeyJwk)");
+        }
+
+        // Reconstruct identity object compatible with generateIdentity output
+        // We need to create the loginKey (base64 encoded JSON)
+        const identityObject = {
+            phoneNumber: backup.identity.phoneNumber,
+            privateKey: backup.identity.privateKeyJwk,
+            publicKey: backup.identity.publicKeyJwk
+        };
+        const loginKey = btoa(JSON.stringify(identityObject));
+
+        // Verify we can import it
+        const imported = await importIdentity(loginKey);
+
+        // If successful, set as generated data so user can set a new master password
+        setGeneratedData({
+            ...imported,
+            loginKey,
+            publicKeyJwk: backup.identity.publicKeyJwk
+        });
+
+        // If backup has chats/contacts, we should probably save them to localStorage temporarily
+        // or just let them be overwritten when the user logs in?
+        // Actually, we should probably restore them AFTER the user sets the master password.
+        // But we don't have the master password yet.
+        // So we can store the raw backup in memory or a temp variable?
+        // Let's just store the raw backup in a ref or state to be processed in handleCreateAccount?
+        // Or simpler: Just restore the identity now, and let the user manually import chats later?
+        // The user said "import existing private key OR whole backup".
+        // If it's a whole backup, we should restore chats too.
+        
+        // Let's save the backup data to localStorage UNENCRYPTED temporarily? No, that's bad.
+        // We can keep it in memory.
+        // But handleCreateAccount reloads the page? No, it calls onLogin.
+        
+        // Let's modify handleCreateAccount to check for pending backup data.
+        if (backup.chats) {
+            window.pendingBackupChats = backup.chats;
+        }
+        if (backup.contacts) {
+            window.pendingBackupContacts = backup.contacts;
+        }
+
+      } catch (err) {
+        console.error(err);
+        setError("Invalid backup file: " + err.message);
+      }
+    };
+    reader.readAsText(file);
   };
 
   // Render Unlock Screen
@@ -221,6 +296,37 @@ export default function Login({ onLogin }) {
             {loading ? <span className="animate-spin">⌛</span> : <Terminal size={20} />}
             GENERATE NEW IDENTITY
           </button>
+
+          <div className="relative">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-white/10"></div>
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-black px-2 text-gray-500 font-mono">Or</span>
+            </div>
+          </div>
+
+          <input 
+            type="file" 
+            ref={fileInputRef} 
+            onChange={handleImport} 
+            accept=".json" 
+            className="hidden" 
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={loading}
+            className="w-full bg-white/5 text-gray-400 font-bold py-3 rounded-xl hover:bg-white/10 hover:text-white transition-all disabled:opacity-50 flex items-center justify-center gap-2 border border-white/10"
+          >
+            <Upload size={18} />
+            IMPORT BACKUP
+          </button>
+          
+          {error && (
+            <div className="text-red-400 text-xs text-center font-mono mt-2">
+              {error}
+            </div>
+          )}
         </div>
       ) : (
         <div className="space-y-6 animate-in slide-in-from-bottom-4">

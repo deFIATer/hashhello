@@ -34,6 +34,7 @@ export default function Chat({ identity, onLogout }) {
   const analyserRef = useRef(null);
   const canvasRef = useRef(null);
   const animationFrameRef = useRef(null);
+  const ringtoneIntervalRef = useRef(null);
 
   // Call State
   const [incomingCall, setIncomingCall] = useState(null);
@@ -318,7 +319,14 @@ export default function Chat({ identity, onLogout }) {
           console.log('Incoming call from:', call.peer);
           setIncomingCall({ call, peerId: call.peer });
           setCallStatus('ringing');
-          playSound('ringtone'); // Ensure you have a ringtone sound or use 'connect' for now
+          
+          // Start ringtone loop
+          playSound('ringtone');
+          if (ringtoneIntervalRef.current) clearInterval(ringtoneIntervalRef.current);
+          ringtoneIntervalRef.current = setInterval(() => {
+            playSound('ringtone');
+          }, 2000);
+
           notify('Incoming Call', `Incoming call from ${formatDisplayNumber(call.peer)}`);
         });
 
@@ -396,13 +404,21 @@ export default function Chat({ identity, onLogout }) {
     }
   };
 
-  const exportData = () => {
+  const exportData = async () => {
+    let privateKeyJwk = null;
+    try {
+      if (identity.keyPair && identity.keyPair.privateKey) {
+        privateKeyJwk = await window.crypto.subtle.exportKey("jwk", identity.keyPair.privateKey);
+      }
+    } catch (e) {
+      console.error("Failed to export private key", e);
+    }
+
     const backup = {
       identity: {
         phoneNumber: identity.phoneNumber,
-        // We don't export private keys for security in this simple backup, 
-        // but we include public info.
-        publicKeyJwk: identity.publicKeyJwk
+        publicKeyJwk: identity.publicKeyJwk,
+        privateKeyJwk: privateKeyJwk
       },
       chats: {},
       contacts: contacts,
@@ -740,7 +756,20 @@ export default function Chat({ identity, onLogout }) {
       setActiveCall(call);
       setCallStatus('calling');
       
+      // Start calling tone loop
+      playSound('call_out');
+      if (ringtoneIntervalRef.current) clearInterval(ringtoneIntervalRef.current);
+      ringtoneIntervalRef.current = setInterval(() => {
+        playSound('call_out');
+      }, 2000);
+      
       call.on('stream', (remoteStream) => {
+        // Stop calling tone
+        if (ringtoneIntervalRef.current) {
+          clearInterval(ringtoneIntervalRef.current);
+          ringtoneIntervalRef.current = null;
+        }
+
         if (remoteAudioRef.current) {
           remoteAudioRef.current.srcObject = remoteStream;
           remoteAudioRef.current.play();
@@ -766,6 +795,12 @@ export default function Chat({ identity, onLogout }) {
   const answerCall = async () => {
     if (!incomingCall) return;
     
+    // Stop ringtone
+    if (ringtoneIntervalRef.current) {
+      clearInterval(ringtoneIntervalRef.current);
+      ringtoneIntervalRef.current = null;
+    }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       localStreamRef.current = stream;
@@ -799,6 +834,12 @@ export default function Chat({ identity, onLogout }) {
   };
 
   const rejectCall = () => {
+    // Stop ringtone
+    if (ringtoneIntervalRef.current) {
+      clearInterval(ringtoneIntervalRef.current);
+      ringtoneIntervalRef.current = null;
+    }
+
     if (incomingCall) {
       incomingCall.call.close();
       setIncomingCall(null);
@@ -807,6 +848,12 @@ export default function Chat({ identity, onLogout }) {
   };
 
   const endCall = () => {
+    // Stop any tones
+    if (ringtoneIntervalRef.current) {
+      clearInterval(ringtoneIntervalRef.current);
+      ringtoneIntervalRef.current = null;
+    }
+
     if (activeCall) {
       activeCall.close();
     }

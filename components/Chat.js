@@ -202,7 +202,17 @@ export default function Chat({ identity, onLogout }) {
         // Attach key to connection object to avoid state sync issues
         conn.sharedKey = secret;
 
-        updateChatStatus(peerId, 'secure');
+        setChats(prev => {
+          if (!prev[peerId]) return prev;
+          return {
+            ...prev,
+            [peerId]: { 
+              ...prev[peerId], 
+              status: 'secure',
+              lastMessage: 'Secure connection established' 
+            }
+          };
+        });
         playSound('connect');
 
         if (data.type === 'handshake-syn') {
